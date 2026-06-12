@@ -14,6 +14,10 @@
  *   ENKE_API_KEY=xxx npx enke-mcp-server          # remote, API key auth
  */
 
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json") as { version: string };
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -22,25 +26,31 @@ import {
   shorten, listLinks, deleteLink, updateLink, getLinkStats,
   createLanding, getToken, EnkeError,
   uploadDoc, listDocs, getDoc, deleteDoc, updateDoc, renewDoc,
+  whoami,
 } from "enke-sdk";
 import http from "node:http";
 
 // ── Tool Schemas ──
 
-const expiresInEnum = z.enum(["1h", "24h", "7d", "30d"]).optional();
+/** Cached user ID — resolves on first use. */
+let _cachedUid: string | null = null;
+async function getUid(): Promise<string> {
+  if (_cachedUid) return _cachedUid;
+  const user = await whoami();
+  _cachedUid = String(user.user_id);
+  return _cachedUid;
+}
 
 const ShortenSchema = z.object({
   url: z.string().url().describe("The long URL to shorten"),
   slug: z.string().min(1).optional().describe("Custom short slug (back-half). Auto-generated if omitted."),
   password: z.string().min(1).optional().describe("Optional password to protect the link"),
-  expiresIn: expiresInEnum.describe("Expiration duration: 1h, 24h, 7d, 30d"),
-  webhookUrl: z.string().url().optional().describe("Webhook URL called when the link is clicked"),
+  keep_days: z.number().min(1).max(365).default(30).describe("Keep duration in days (default 30, max 365)"),
 });
 type ShortenInput = z.infer<typeof ShortenSchema>;
 
 const ListLinksSchema = z.object({
-  limit: z.number().min(1).max(100).default(20).describe("Max number of links to return (default 20, max 100)"),
-  search: z.string().optional().describe("Search term to filter links"),
+  cursor: z.string().optional().describe("Pagination cursor (empty for first page)"),
 });
 type ListLinksInput = z.infer<typeof ListLinksSchema>;
 
@@ -51,21 +61,24 @@ type LinkIdInput = z.infer<typeof LinkIdSchema>;
 
 const UpdateLinkSchema = z.object({
   id: z.string().describe("The slug or ID of the short link to update"),
-  slug: z.string().min(1).optional().describe("New custom slug"),
-  password: z.string().min(1).optional().describe("New password (set empty string to remove)"),
-  expiresIn: expiresInEnum.describe("New expiration: 1h, 24h, 7d, 30d"),
-  webhookUrl: z.string().url().optional().describe("New webhook URL"),
+  url: z.string().url().optional().describe("New redirect URL"),
+  password: z.string().optional().describe("New password (empty string to remove)"),
 });
 type UpdateLinkInput = z.infer<typeof UpdateLinkSchema>;
 
 const CreateLandingSchema = z.object({
+  slug: z.string().min(1).describe("Custom slug for the landing page (required)"),
   title: z.string().min(1).describe("Title of the landing page"),
+  description: z.string().optional().describe("Description shown under the title"),
   links: z.array(z.object({
     url: z.string().url(),
-    label: z.string().min(1),
-  })).describe("Array of {url, label} pairs"),
-  slug: z.string().min(1).optional().describe("Custom slug for the landing page"),
-  theme: z.enum(["light", "dark", "minimal"]).optional().describe("Theme name (light, dark, minimal)"),
+    title: z.string().min(1),
+  })).describe("Array of {url, title} pairs"),
+  theme: z.object({
+    background: z.enum(["light", "dark", "gradient"]).optional(),
+    layout: z.enum(["gallery", "terminal", "magazine", "matrix", "anime"]).optional(),
+    accent_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  }).optional().describe("Visual theme settings"),
 });
 type CreateLandingInput = z.infer<typeof CreateLandingSchema>;
 
@@ -90,7 +103,7 @@ function wrapTool<T>(
 
 const server = new McpServer({
   name: "enke-mcp-server",
-  version: "0.1.0",
+  version: pkg.version,
   description: "en.ke — secure link & context relay for AI agents. Create, manage, and audit short links.",
 });
 
@@ -104,8 +117,7 @@ server.tool(
     const link = await shorten(input.url, {
       slug: input.slug,
       password: input.password,
-      expiresIn: input.expiresIn,
-      webhookUrl: input.webhookUrl,
+      keep_days: input.keep_days,
     });
     return { content: [{ type: "text", text: JSON.stringify(link, null, 2) }] };
   }),
@@ -113,11 +125,12 @@ server.tool(
 
 server.tool(
   "list_links",
-  "List your short links. Returns up to 100 results; use limit and search to filter.",
+  "List your short links. Returns links with pagination support.",
   ListLinksSchema.shape,
   wrapTool(async (input: ListLinksInput) => {
-    const links = await listLinks({ limit: input.limit, search: input.search });
-    return { content: [{ type: "text", text: JSON.stringify(links, null, 2) }] };
+    const uid = await getUid();
+    const result = await listLinks({ uid, cursor: input.cursor });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }),
 );
 
@@ -126,7 +139,8 @@ server.tool(
   "Get click analytics for a specific short link: daily counts, referrers, geo distribution, and device types.",
   LinkIdSchema.shape,
   wrapTool(async (input: LinkIdInput) => {
-    const stats = await getLinkStats(input.id);
+    const uid = await getUid();
+    const stats = await getLinkStats(input.id, uid);
     return { content: [{ type: "text", text: JSON.stringify(stats, null, 2) }] };
   }),
 );
@@ -143,14 +157,12 @@ server.tool(
 
 server.tool(
   "update_link",
-  "Update a short link's properties: change slug, set/remove password, change expiration, or update webhook URL. The target URL cannot be changed.",
+  "Update a short link's properties: change target URL or set/remove password.",
   UpdateLinkSchema.shape,
   wrapTool(async (input: UpdateLinkInput) => {
     const link = await updateLink(input.id, {
-      slug: input.slug,
+      url: input.url,
       password: input.password,
-      expiresIn: input.expiresIn,
-      webhookUrl: input.webhookUrl,
     });
     return { content: [{ type: "text", text: JSON.stringify(link, null, 2) }] };
   }),
@@ -158,13 +170,14 @@ server.tool(
 
 server.tool(
   "create_landing",
-  "Create a landing page with multiple links. Useful for sharing collections of links with a single URL.",
+  "Create a landing page (link-in-bio) with multiple links. Slug is required.",
   CreateLandingSchema.shape,
   wrapTool(async (input: CreateLandingInput) => {
     const lp = await createLanding({
-      title: input.title,
-      links: input.links,
       slug: input.slug,
+      title: input.title,
+      description: input.description,
+      links: input.links,
       theme: input.theme,
     });
     return { content: [{ type: "text", text: JSON.stringify(lp, null, 2) }] };
