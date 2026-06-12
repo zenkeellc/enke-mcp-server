@@ -1,6 +1,6 @@
 {
   "name": "enke-mcp-server",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "en.ke MCP Server — secure link tools for AI agents (local stdio + remote SSE)",
   "type": "module",
   "bin": {
