@@ -22,7 +22,7 @@ import {
   shorten, listLinks, deleteLink, updateLink, getLinkStats,
   createLanding, getToken, EnkeError,
   uploadDoc, listDocs, getDoc, deleteDoc, updateDoc, renewDoc,
-} from "@enke/sdk";
+} from "enke-sdk";
 import http from "node:http";
 
 // ── Tool Schemas ──

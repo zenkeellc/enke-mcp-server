@@ -1,20 +1,22 @@
 {
   "name": "enke-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "en.ke MCP Server — secure link tools for AI agents (local stdio + remote SSE)",
   "type": "module",
   "bin": {
     "enke-mcp-server": "./dist/server.js"
   },
   "main": "dist/server.js",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "type-check": "tsc --noEmit",
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@enke/sdk": "file:../enke-cli/packages/sdk",
+    "enke-sdk": "file:../enke-cli/packages/sdk",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },
@@ -27,5 +29,12 @@
     "type": "git",
     "url": "git@github-zenkee:zenkeellc/enke-mcp-server.git"
   },
-  "keywords": ["enke", "mcp", "mcp-server", "model-context-protocol", "url-shortener", "ai-agent"]
+  "keywords": [
+    "enke",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "url-shortener",
+    "ai-agent"
+  ]
 }
