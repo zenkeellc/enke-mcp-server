@@ -16,7 +16,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "enke-sdk": "file:../enke-cli/packages/sdk",
+    "enke-sdk": "^1.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },
