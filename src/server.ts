@@ -21,6 +21,7 @@ import { z } from "zod";
 import {
   shorten, listLinks, deleteLink, updateLink, getLinkStats,
   createLanding, getToken, EnkeError,
+  uploadDoc, listDocs, getDoc, deleteDoc, updateDoc, renewDoc,
 } from "@enke/sdk";
 import http from "node:http";
 
@@ -167,6 +168,122 @@ server.tool(
       theme: input.theme,
     });
     return { content: [{ type: "text", text: JSON.stringify(lp, null, 2) }] };
+  }),
+);
+
+// ── Document Share Tools ──
+
+const DocUploadSchema = z.object({
+  file_path: z.string().describe("Absolute path to the file to upload"),
+  exp_days: z.number().min(1).max(365).default(30).describe("Expiration in days"),
+  password: z.string().min(4).optional().describe("Password to protect the document"),
+  comment: z.string().optional().describe("Owner-facing note or label"),
+  burn_after_reading: z.boolean().default(false).describe("Delete after first download"),
+  disable_download: z.boolean().default(false).describe("Preview only, no download button"),
+  max_downloads: z.number().min(0).default(0).describe("Max downloads (0 = unlimited)"),
+});
+type DocUploadInput = z.infer<typeof DocUploadSchema>;
+
+server.tool(
+  "upload_document",
+  "Upload and share a file. Returns a short URL (https://en.ke/{slug}) for secure sharing with expiration, password, watermark, and burn-after-reading.",
+  DocUploadSchema.shape,
+  wrapTool(async (input: DocUploadInput) => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const filePath = path.resolve(input.file_path);
+    if (!fs.existsSync(filePath)) {
+      return { content: [{ type: "text" as const, text: `Error: File not found: ${filePath}` }] };
+    }
+    const filename = path.basename(filePath);
+    const doc = await uploadDoc(filePath, filename, {
+      exp_days: input.exp_days,
+      password: input.password,
+      comment: input.comment,
+      burn_after_reading: input.burn_after_reading,
+      disable_download: input.disable_download,
+      max_downloads: input.max_downloads,
+    });
+    return { content: [{ type: "text" as const, text: `Uploaded: https://en.ke/${doc.slug}\n${JSON.stringify(doc, null, 2)}` }] };
+  }),
+);
+
+const DocListSchema = z.object({
+  cursor: z.string().optional().describe("Pagination cursor"),
+  limit: z.number().min(1).max(100).default(20).describe("Items per page"),
+});
+type DocListInput = z.infer<typeof DocListSchema>;
+
+server.tool(
+  "list_documents",
+  "List all shared documents, newest first.",
+  DocListSchema.shape,
+  wrapTool(async (input: DocListInput) => {
+    const result = await listDocs(input.cursor, input.limit);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+const DocIdSchema = z.object({
+  slug: z.string().describe("Document short slug"),
+});
+type DocIdInput = z.infer<typeof DocIdSchema>;
+
+server.tool(
+  "get_document",
+  "Get details of a specific shared document by slug.",
+  DocIdSchema.shape,
+  wrapTool(async (input: DocIdInput) => {
+    const doc = await getDoc(input.slug);
+    return { content: [{ type: "text" as const, text: JSON.stringify(doc, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "delete_document",
+  "Permanently delete a shared document and its file. Irreversible.",
+  DocIdSchema.shape,
+  wrapTool(async (input: DocIdInput) => {
+    await deleteDoc(input.slug);
+    return { content: [{ type: "text" as const, text: `Document "${input.slug}" deleted.` }] };
+  }),
+);
+
+const DocUpdateSchema = z.object({
+  slug: z.string().describe("Document short slug"),
+  exp_days: z.number().min(1).max(365).optional().describe("New expiration in days"),
+  password: z.string().optional().describe("New password (empty to remove)"),
+  comment: z.string().optional().describe("New comment"),
+  burn_after_reading: z.boolean().optional(),
+  disable_download: z.boolean().optional(),
+  max_downloads: z.number().min(0).optional(),
+});
+type DocUpdateInput = z.infer<typeof DocUpdateSchema>;
+
+server.tool(
+  "update_document",
+  "Update a shared document's settings: expiration, password, download limits, burn-after-reading.",
+  DocUpdateSchema.shape,
+  wrapTool(async (input: DocUpdateInput) => {
+    const doc = await updateDoc(input.slug, {
+      exp_days: input.exp_days,
+      password: input.password,
+      comment: input.comment,
+      burn_after_reading: input.burn_after_reading,
+      disable_download: input.disable_download,
+      max_downloads: input.max_downloads,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(doc, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "renew_document",
+  "Reset a document's expiration timer to the plan's renewal period.",
+  DocIdSchema.shape,
+  wrapTool(async (input: DocIdInput) => {
+    const doc = await renewDoc(input.slug);
+    return { content: [{ type: "text" as const, text: `Renewed: ${doc.slug} (${doc.exp_days} days)` }] };
   }),
 );
 
