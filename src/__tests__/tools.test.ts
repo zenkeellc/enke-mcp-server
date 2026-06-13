@@ -4,7 +4,12 @@ import { z } from "zod";
 // ── Error wrapper pattern (replicated from server.ts) ──
 
 class EnkeError extends Error {
-  constructor(message: string, public statusCode: number) {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public errorCode?: string,
+    public params?: Record<string, number | string | undefined>,
+  ) {
     super(message);
     this.name = "EnkeError";
   }
@@ -17,10 +22,24 @@ function wrapTool<T>(
     try {
       return await fn(input);
     } catch (err) {
-      const msg = err instanceof EnkeError
-        ? `en.ke API error: ${err.message}`
-        : err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text" as const, text: `Error: ${msg}` }] };
+      let text: string;
+      if (err instanceof EnkeError) {
+        text = err.message;
+        const details: string[] = [];
+        if (err.errorCode) details.push(`code: ${err.errorCode}`);
+        if (err.statusCode) details.push(`status: ${err.statusCode}`);
+        if (err.params) {
+          const paramStr = Object.entries(err.params)
+            .filter(([, v]) => v !== undefined)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ");
+          if (paramStr) details.push(`params: {${paramStr}}`);
+        }
+        if (details.length > 0) text += ` (${details.join("; ")})`;
+      } else {
+        text = err instanceof Error ? err.message : String(err);
+      }
+      return { content: [{ type: "text" as const, text }] };
     }
   };
 }
@@ -34,12 +53,39 @@ describe("wrapTool error handling", () => {
     expect(result.content[0].text).toBe("result: 42");
   });
 
-  it("wraps EnkeError with API error prefix", async () => {
+  it("formats EnkeError with status code", async () => {
     const wrapped = wrapTool(async () => {
       throw new EnkeError("Not found", 404);
     });
     const result = await wrapped({} as any);
-    expect(result.content[0].text).toBe("Error: en.ke API error: Not found");
+    expect(result.content[0].text).toBe("Not found (status: 404)");
+  });
+
+  it("formats EnkeError with error code and params", async () => {
+    const wrapped = wrapTool(async () => {
+      throw new EnkeError(
+        "Link limit (100) reached. Upgrade for more links.",
+        429,
+        "LINK_LIMIT_REACHED",
+        { limit: 100, current: 100, plan: "hobby" },
+      );
+    });
+    const result = await wrapped({} as any);
+    expect(result.content[0].text).toContain("Link limit (100) reached");
+    expect(result.content[0].text).toContain("code: LINK_LIMIT_REACHED");
+    expect(result.content[0].text).toContain("status: 429");
+    expect(result.content[0].text).toContain("params: {limit=100, current=100, plan=hobby}");
+  });
+
+  it("formats EnkeError with error code but no params", async () => {
+    const wrapped = wrapTool(async () => {
+      throw new EnkeError("Unauthorized", 401, "AUTH_REQUIRED");
+    });
+    const result = await wrapped({} as any);
+    expect(result.content[0].text).toContain("Unauthorized");
+    expect(result.content[0].text).toContain("code: AUTH_REQUIRED");
+    expect(result.content[0].text).toContain("status: 401");
+    expect(result.content[0].text).not.toContain("params:");
   });
 
   it("wraps generic Error", async () => {
@@ -47,7 +93,7 @@ describe("wrapTool error handling", () => {
       throw new Error("Something broke");
     });
     const result = await wrapped({} as any);
-    expect(result.content[0].text).toBe("Error: Something broke");
+    expect(result.content[0].text).toBe("Something broke");
   });
 
   it("wraps non-Error throws", async () => {
@@ -55,16 +101,16 @@ describe("wrapTool error handling", () => {
       throw "raw string error";
     });
     const result = await wrapped({} as any);
-    expect(result.content[0].text).toBe("Error: raw string error");
+    expect(result.content[0].text).toBe("raw string error");
   });
 
-  it("returns error content for 401", async () => {
+  it("formats 401 EnkeError with login hint context", async () => {
     const wrapped = wrapTool(async () => {
-      throw new EnkeError("Not logged in", 401);
+      throw new EnkeError("Not logged in. Run: enke login", 401, "AUTH_REQUIRED");
     });
     const result = await wrapped({} as any);
-    expect(result.content[0].text).toContain("Error:");
     expect(result.content[0].text).toContain("Not logged in");
+    expect(result.content[0].text).toContain("code: AUTH_REQUIRED");
   });
 });
 
