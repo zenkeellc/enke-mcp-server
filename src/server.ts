@@ -45,7 +45,7 @@ const ShortenSchema = z.object({
   url: z.string().url().describe("The long URL to shorten"),
   slug: z.string().min(1).optional().describe("Custom short slug (back-half). Auto-generated if omitted."),
   password: z.string().min(1).optional().describe("Optional password to protect the link"),
-  keep_days: z.number().min(1).max(365).default(30).describe("Keep duration in days (default 30, max 365)"),
+  keep_days: z.number().min(1).max(3650).default(30).describe("Keep duration in days (default 30, plan-dependent max)"),
 });
 type ShortenInput = z.infer<typeof ShortenSchema>;
 
@@ -91,10 +91,25 @@ function wrapTool<T>(
     try {
       return await fn(input);
     } catch (err) {
-      const msg = err instanceof EnkeError
-        ? `en.ke API error: ${err.message}`
-        : err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text" as const, text: `Error: ${msg}` }] };
+      let text: string;
+      if (err instanceof EnkeError) {
+        text = err.message;
+        // Include error code and params for structured handling
+        const details: string[] = [];
+        if (err.errorCode) details.push(`code: ${err.errorCode}`);
+        if (err.statusCode) details.push(`status: ${err.statusCode}`);
+        if (err.params) {
+          const paramStr = Object.entries(err.params)
+            .filter(([, v]) => v !== undefined)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ");
+          if (paramStr) details.push(`params: {${paramStr}}`);
+        }
+        if (details.length > 0) text += ` (${details.join("; ")})`;
+      } else {
+        text = err instanceof Error ? err.message : String(err);
+      }
+      return { content: [{ type: "text" as const, text }] };
     }
   };
 }
@@ -188,7 +203,7 @@ server.tool(
 
 const DocUploadSchema = z.object({
   file_path: z.string().describe("Absolute path to the file to upload"),
-  exp_days: z.number().min(1).max(365).default(30).describe("Expiration in days"),
+  exp_days: z.number().min(1).max(3650).default(30).describe("Expiration in days (plan-dependent max)"),
   password: z.string().min(4).optional().describe("Password to protect the document"),
   comment: z.string().optional().describe("Owner-facing note or label"),
   burn_after_reading: z.boolean().default(false).describe("Delete after first download"),
@@ -264,7 +279,7 @@ server.tool(
 
 const DocUpdateSchema = z.object({
   slug: z.string().describe("Document short slug"),
-  exp_days: z.number().min(1).max(365).optional().describe("New expiration in days"),
+  exp_days: z.number().min(1).max(3650).optional().describe("New expiration in days (plan-dependent max)"),
   password: z.string().optional().describe("New password (empty to remove)"),
   comment: z.string().optional().describe("New comment"),
   burn_after_reading: z.boolean().optional(),
